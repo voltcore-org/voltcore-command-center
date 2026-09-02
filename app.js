@@ -1,5 +1,6 @@
 const API = "https://core-api.dominic-calandro1991.workers.dev/api/v1/events";
 const ANOMALY = new Set(["critical", "fatal", "high", "error"]);
+const MIN_SPIN_MS = 400;
 
 const state = {
   events: [],
@@ -10,10 +11,13 @@ const state = {
   source: "all",
   openId: null,
   freshIds: new Set(),
+  syncing: false,
 };
 
 const seen = new Set();
 let firstLoad = true;
+let inflight = null;
+let lastRefreshTap = 0;
 
 function el(tag, cls, text) {
   const node = document.createElement(tag);
@@ -54,9 +58,21 @@ function ago(iso, now = Date.now()) {
   return Math.floor(s / 86400) + "d ago";
 }
 
-async function load() {
+async function load(userInitiated) {
+  if (inflight) inflight.abort();
+  const ac = new AbortController();
+  inflight = ac;
+  const started = Date.now();
+  if (userInitiated) {
+    state.syncing = true;
+    render();
+  }
   try {
-    const res = await fetch(API + "?limit=150", { headers: { Accept: "application/json" }, cache: "no-store" });
+    const res = await fetch(API + "?limit=150&_=" + Date.now(), {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+      signal: ac.signal,
+    });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || data.error || ("HTTP " + res.status));
     const next = Array.isArray(data.events) ? data.events : [];
@@ -78,9 +94,27 @@ async function load() {
     state.fetchedAt = data.fetched_at || new Date().toISOString();
     state.error = null;
   } catch (err) {
+    if (err && err.name === "AbortError") return;
     state.error = err.message || "Fetch failed";
+  } finally {
+    if (userInitiated) {
+      const wait = Math.max(0, MIN_SPIN_MS - (Date.now() - started));
+      if (wait) await new Promise((r) => setTimeout(r, wait));
+    }
+    if (inflight === ac) {
+      state.syncing = false;
+      inflight = null;
+      render();
+    }
   }
-  render();
+}
+
+function requestRefresh(e) {
+  if (e) e.preventDefault();
+  const now = Date.now();
+  if (now - lastRefreshTap < 350) return;
+  lastRefreshTap = now;
+  load(true);
 }
 
 function filtered() {
@@ -134,8 +168,15 @@ function render() {
   const now = Date.now();
   const live = !state.error && Boolean(state.fetchedAt);
   const pill = document.getElementById("livePill");
-  pill.textContent = live ? "LIVE" : "OFFLINE";
-  pill.className = "pill " + (live ? "on" : "off");
+  const refreshBtn = document.getElementById("refreshBtn");
+  if (state.syncing) {
+    pill.textContent = "SYNCING";
+    pill.className = "pill on";
+  } else {
+    pill.textContent = live ? "LIVE" : "OFFLINE";
+    pill.className = "pill " + (live ? "on" : "off");
+  }
+  refreshBtn.classList.toggle("busy", state.syncing);
 
   const sources = Array.from(new Set(state.events.map((e) => e.source).filter(Boolean))).sort();
   const sevs = Array.from(new Set(state.events.map((e) => String(e.severity || "info").toLowerCase()))).sort();
@@ -169,8 +210,11 @@ function render() {
     src.appendChild(chip(name, state.source === name, () => { state.source = name; render(); }));
   });
 
+  const syncLine = state.syncing
+    ? "syncing…"
+    : (state.fetchedAt ? "sync " + ago(state.fetchedAt, now) : "awaiting sync");
   document.getElementById("meta").textContent =
-    rows.length + " shown · created_at DESC · poll 5s · " + (state.fetchedAt ? "sync " + ago(state.fetchedAt, now) : "awaiting sync");
+    rows.length + " shown · created_at DESC · poll 5s · " + syncLine;
 
   const list = document.getElementById("list");
   list.replaceChildren();
@@ -179,7 +223,8 @@ function render() {
     return;
   }
   rows.forEach((ev) => {
-    const li = el("li", (isAnomaly(ev.severity) ? "anomaly" : "") + (state.freshIds.has(String(ev.id)) ? " fresh" : ""));
+    const cls = (isAnomaly(ev.severity) ? "anomaly" : "") + (state.freshIds.has(String(ev.id)) ? " fresh" : "");
+    const li = el("li", cls.trim());
     const btn = el("button", "row");
     btn.type = "button";
     btn.appendChild(el("span", "time", clock(ev.created_at)));
@@ -206,14 +251,18 @@ document.getElementById("search").addEventListener("input", (e) => {
   state.query = e.target.value;
   render();
 });
-document.getElementById("refreshBtn").addEventListener("click", () => { load(); });
 
-load();
+const refreshBtn = document.getElementById("refreshBtn");
+refreshBtn.addEventListener("click", requestRefresh);
+refreshBtn.addEventListener("touchend", requestRefresh, { passive: false });
+
+load(false);
 setInterval(() => {
   if (document.visibilityState === "hidden") return;
-  load();
+  if (state.syncing) return;
+  load(false);
 }, 5000);
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible") load();
+  if (document.visibilityState === "visible") load(false);
 });
 setInterval(render, 1000);
