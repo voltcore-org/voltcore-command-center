@@ -90,32 +90,48 @@ function tabEvents(events, tab) {
   return events.filter((e) => set.has(String(e.source || "")));
 }
 function gaugePct(key, n) {
-  if (key.indexOf("frame") >= 0) return Math.max(0, Math.min(100, (n / 60) * 100));
-  if (key.indexOf("memory") >= 0) return Math.max(0, Math.min(100, (n / 512) * 100));
+  const k = String(key).toLowerCase();
+  if (k.indexOf("frame") >= 0) return Math.max(0, Math.min(100, (n / 60) * 100));
+  if (k.indexOf("memory") >= 0) return Math.max(0, Math.min(100, (n / 512) * 100));
+  if (k.indexOf("latency") >= 0) return Math.max(0, Math.min(100, (n / 500) * 100));
+  if (k.indexOf("uptime") >= 0) return Math.max(0, Math.min(100, (n / 86400) * 100));
+  if (k.indexOf("container") >= 0) return Math.max(0, Math.min(100, (n / 8) * 100));
+  if (k.indexOf("error") >= 0) return Math.max(0, Math.min(100, n <= 1 ? n * 100 : n * 10));
   if (n >= 0 && n <= 1) return n * 100;
   if (n >= 0 && n <= 100) return n;
   return Math.max(0, Math.min(100, n / 10));
 }
 function fmt(key, value) {
   if (value == null) return "awaiting metric";
+  const k = String(key).toLowerCase();
   if (typeof value === "boolean") return value ? "healthy" : "down";
   if (typeof value === "number") {
-    if (key.indexOf("uptime") >= 0) {
+    if (k.indexOf("uptime") >= 0) {
       const s = Math.round(value);
       if (s < 60) return s + "s";
       if (s < 3600) return Math.floor(s / 60) + "m";
       return Math.floor(s / 3600) + "h";
     }
-    if (key.indexOf("memory") >= 0) return Math.round(value) + " MB";
-    if (key.indexOf("latency") >= 0) return Math.round(value) + " ms";
-    if (key.indexOf("frame") >= 0) return Math.round(value) + " fps";
-    if (key.indexOf("accuracy") >= 0 || key.indexOf("cpu") >= 0) {
+    if (k.indexOf("memory") >= 0) return Math.round(value) + " MB";
+    if (k.indexOf("latency") >= 0) return Math.round(value) + " ms";
+    if (k.indexOf("frame") >= 0) return Math.round(value) + " fps";
+    if (k.indexOf("accuracy") >= 0 || k.indexOf("cpu") >= 0 || k.indexOf("utilization") >= 0) {
       const pct = value <= 1 ? value * 100 : value;
       return Math.round(pct) + "%";
     }
     return String(value);
   }
   return String(value);
+}
+function latestPayload(events) {
+  const out = {};
+  events.forEach((ev) => {
+    const r = rec(ev.payload);
+    Object.keys(r).forEach((k) => {
+      if (!(k in out) && r[k] != null) out[k] = r[k];
+    });
+  });
+  return out;
 }
 
 async function load(userInitiated) {
@@ -172,7 +188,7 @@ function chip(label, active, onClick) {
   return b;
 }
 
-function metricCard(label, kind, value, waiting) {
+function metricCard(key, label, kind, value, waiting) {
   const art = el("article", "metric");
   art.appendChild(el("p", "metric-label", label));
   if (waiting) {
@@ -181,14 +197,14 @@ function metricCard(label, kind, value, waiting) {
   }
   if (kind === "badge") {
     const on = Boolean(value);
-    art.appendChild(el("p", on ? "ok" : "danger", fmt(label, value)));
+    art.appendChild(el("p", on ? "ok" : "danger", fmt(key, value)));
   } else if (kind === "log") {
-    art.appendChild(el("p", "metric-val", fmt(label, value)));
+    art.appendChild(el("p", "metric-val", fmt(key, value)));
   } else {
-    art.appendChild(el("p", "metric-val", fmt(label, value)));
+    art.appendChild(el("p", "metric-val", fmt(key, value)));
     const bar = el("div", "bar");
     const fill = el("div", "bar-fill");
-    fill.style.width = gaugePct(label, typeof value === "number" ? value : 0) + "%";
+    fill.style.width = gaugePct(key, typeof value === "number" ? value : 0) + "%";
     bar.appendChild(fill);
     art.appendChild(bar);
   }
@@ -292,18 +308,18 @@ function render() {
       grid.appendChild(b);
     });
   } else {
-    const latest = rec((rowsAll[0] || {}).payload);
+    const latest = latestPayload(rowsAll);
     const named = NAMED[tab.id] || [];
     const skip = new Set(named.map((n) => n[0]));
     named.forEach(([key, label, kind]) => {
-      grid.appendChild(metricCard(label, kind, latest[key], latest[key] == null));
+      grid.appendChild(metricCard(key, label, kind, latest[key], latest[key] == null));
     });
     Object.keys(latest).forEach((key) => {
       if (skip.has(key)) return;
       const v = latest[key];
-      if (typeof v === "boolean") grid.appendChild(metricCard(key.replace(/_/g, " "), "badge", v, false));
-      else if (typeof v === "number") grid.appendChild(metricCard(key.replace(/_/g, " "), "gauge", v, false));
-      else if (typeof v === "string") grid.appendChild(metricCard(key.replace(/_/g, " "), "log", v, false));
+      if (typeof v === "boolean") grid.appendChild(metricCard(key, key.replace(/_/g, " "), "badge", v, false));
+      else if (typeof v === "number") grid.appendChild(metricCard(key, key.replace(/_/g, " "), "gauge", v, false));
+      else if (typeof v === "string") grid.appendChild(metricCard(key, key.replace(/_/g, " "), "log", v, false));
     });
     if (!grid.children.length) grid.appendChild(el("p", "empty", "awaiting metric"));
   }
