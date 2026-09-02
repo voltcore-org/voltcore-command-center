@@ -14,6 +14,8 @@ Need a $0, iOS-first observability surface over `public.events` with near-real-t
 | Data path | Cloudflare Worker `core-api` GET `/api/v1/events` | Service-role stays on the Worker; Pages never holds Supabase keys |
 | Freshness | 5s poll + Page Visibility | No Realtime websocket bill; pauses in background Safari tabs |
 | Auth | None | $0 static host cannot keep a secret; ingest POST is already public |
+| Order | `created_at DESC` from the Worker | Newest ingest lands at the top of the grid |
+| Anomalies | Isolated queue + danger rail | `error` / `high` / `critical` / `fatal` never blend into the stream |
 
 ## Rejected
 - Direct `anon` Supabase from the browser — would require opening `events` to the world via RLS, or shipping a key.
@@ -21,4 +23,7 @@ Need a $0, iOS-first observability surface over `public.events` with near-real-t
 - Supabase Realtime — extra client SDK + RLS policy surface for a 5s SLA we do not need.
 
 ## Consequences
-Anyone who knows the Worker URL can read recent events. Payloads must stay non-secret. Worker must be redeployed after adding GET.
+Anyone who knows the Worker URL can read recent events. Payloads must stay non-secret. Worker GET must stay deployed with `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY`.
+
+## Verification
+2026-09-02: `GET /api/v1/events` → 200 `{status,events,fetched_at}`; `POST` → 202; Pages → 200.
