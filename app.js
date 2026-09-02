@@ -9,7 +9,18 @@ const state = {
   severity: "all",
   source: "all",
   openId: null,
+  freshIds: new Set(),
 };
+
+const seen = new Set();
+let firstLoad = true;
+
+function el(tag, cls, text) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text != null) node.textContent = text;
+  return node;
+}
 
 function isAnomaly(sev) {
   return ANOMALY.has(String(sev || "").toLowerCase());
@@ -45,10 +56,25 @@ function ago(iso, now = Date.now()) {
 
 async function load() {
   try {
-    const res = await fetch(API + "?limit=150", { headers: { Accept: "application/json" } });
+    const res = await fetch(API + "?limit=150", { headers: { Accept: "application/json" }, cache: "no-store" });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
-    state.events = Array.isArray(data.events) ? data.events : [];
+    if (!res.ok) throw new Error(data.detail || data.error || ("HTTP " + res.status));
+    const next = Array.isArray(data.events) ? data.events : [];
+    if (!firstLoad) {
+      const fresh = new Set();
+      next.forEach((ev) => {
+        const id = String(ev.id);
+        if (!seen.has(id)) fresh.add(id);
+      });
+      if (fresh.size) {
+        state.freshIds = fresh;
+        window.setTimeout(() => { state.freshIds = new Set(); render(); }, 1600);
+      }
+    }
+    firstLoad = false;
+    seen.clear();
+    next.forEach((ev) => seen.add(String(ev.id)));
+    state.events = next;
     state.fetchedAt = data.fetched_at || new Date().toISOString();
     state.error = null;
   } catch (err) {
@@ -69,12 +95,39 @@ function filtered() {
 }
 
 function chip(label, active, onClick) {
-  const b = document.createElement("button");
+  const b = el("button", "chip" + (active ? " active" : ""), label);
   b.type = "button";
-  b.className = "chip" + (active ? " active" : "");
-  b.textContent = label;
   b.addEventListener("click", onClick);
   return b;
+}
+
+function renderAnomalies(anoms, now) {
+  const list = document.getElementById("anomalyList");
+  const count = document.getElementById("anomCount");
+  const panel = document.querySelector(".anomaly-panel");
+  count.textContent = String(anoms.length);
+  panel.classList.toggle("hot", anoms.length > 0);
+  list.replaceChildren();
+  if (!anoms.length) {
+    list.appendChild(el("li", "empty", "Clear — no high-severity events."));
+    return;
+  }
+  anoms.forEach((ev) => {
+    const li = el("li");
+    const btn = el("button", "anom-card");
+    btn.type = "button";
+    btn.appendChild(el("span", "sev danger", String(ev.severity || "high")));
+    btn.appendChild(el("span", "source", ev.source || "unknown"));
+    btn.appendChild(el("span", "type", (ev.event_type || "event") + " · " + ago(ev.created_at, now)));
+    btn.addEventListener("click", () => {
+      state.openId = ev.id;
+      state.severity = "all";
+      state.source = "all";
+      render();
+    });
+    li.appendChild(btn);
+    list.appendChild(li);
+  });
 }
 
 function render() {
@@ -85,25 +138,28 @@ function render() {
   pill.className = "pill " + (live ? "on" : "off");
 
   const sources = Array.from(new Set(state.events.map((e) => e.source).filter(Boolean))).sort();
+  const sevs = Array.from(new Set(state.events.map((e) => String(e.severity || "info").toLowerCase()))).sort();
   const rows = filtered();
-  const anoms = state.events.filter((e) => isAnomaly(e.severity)).length;
+  const anoms = state.events.filter((e) => isAnomaly(e.severity));
 
   document.getElementById("statCount").textContent = String(state.events.length);
-  document.getElementById("statAnom").textContent = String(anoms);
+  document.getElementById("statAnom").textContent = String(anoms.length);
   document.getElementById("statSources").textContent = String(sources.length);
   document.getElementById("statLast").textContent = state.events[0] ? ago(state.events[0].created_at, now) : "—";
 
   const err = document.getElementById("errorBox");
   if (state.error) {
     err.hidden = false;
-    err.textContent = "Telemetry link failed: " + state.error + " — deploy core-api GET /api/v1/events.";
+    err.textContent = "Telemetry link failed: " + state.error;
   } else {
     err.hidden = true;
   }
 
+  renderAnomalies(anoms, now);
+
   const sev = document.getElementById("sevChips");
   sev.replaceChildren();
-  ["all", "anomaly", "error", "info"].forEach((key) => {
+  ["all", "anomaly"].concat(sevs).forEach((key) => {
     sev.appendChild(chip(key, state.severity === key, () => { state.severity = key; render(); }));
   });
   const src = document.getElementById("srcChips");
@@ -114,36 +170,32 @@ function render() {
   });
 
   document.getElementById("meta").textContent =
-    rows.length + " shown · poll 5s · " + (state.fetchedAt ? "sync " + ago(state.fetchedAt, now) : "awaiting sync");
+    rows.length + " shown · created_at DESC · poll 5s · " + (state.fetchedAt ? "sync " + ago(state.fetchedAt, now) : "awaiting sync");
 
   const list = document.getElementById("list");
   list.replaceChildren();
   if (!rows.length) {
-    const empty = document.createElement("li");
-    empty.className = "empty";
-    empty.textContent = state.events.length ? "No events match this filter." : "Listening for ingest…";
-    list.appendChild(empty);
+    list.appendChild(el("li", "empty", state.events.length ? "No events match this filter." : "Listening for ingest…"));
     return;
   }
   rows.forEach((ev) => {
-    const li = document.createElement("li");
-    if (isAnomaly(ev.severity)) li.className = "anomaly";
-    const btn = document.createElement("button");
+    const li = el("li", (isAnomaly(ev.severity) ? "anomaly" : "") + (state.freshIds.has(String(ev.id)) ? " fresh" : ""));
+    const btn = el("button", "row");
     btn.type = "button";
-    btn.className = "row";
-    btn.innerHTML =
-      '<span class="time">' + clock(ev.created_at) + "</span>" +
-      '<span class="sev ' + tone(ev.severity) + '">' + (ev.severity || "info") + "</span>" +
-      '<span><span class="source">' + (ev.source || "unknown") + "</span><div class='type'>" + (ev.event_type || "event") + "</div></span>";
+    btn.appendChild(el("span", "time", clock(ev.created_at)));
+    btn.appendChild(el("span", "sev " + tone(ev.severity), ev.severity || "info"));
+    const mid = el("span");
+    mid.appendChild(el("span", "source", ev.source || "unknown"));
+    mid.appendChild(el("div", "type", ev.event_type || "event"));
+    btn.appendChild(mid);
+    btn.appendChild(el("span", "ago", ago(ev.created_at, now)));
     btn.addEventListener("click", () => {
       state.openId = state.openId === ev.id ? null : ev.id;
       render();
     });
     li.appendChild(btn);
     if (state.openId === ev.id) {
-      const pre = document.createElement("pre");
-      pre.className = "payload";
-      pre.textContent = preview(ev.payload);
+      const pre = el("pre", "payload", preview(ev.payload));
       li.appendChild(pre);
     }
     list.appendChild(li);
