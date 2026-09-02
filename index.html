@@ -6,13 +6,13 @@
   <meta name="theme-color" content="#07090c" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <meta name="description" content="VOLTCORE Command Center — live ingest observability." />
+  <meta name="description" content="VOLTCORE Command Center — multi-app health and remediation." />
   <title>VOLTCORE Command Center</title>
   <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="./styles.css?v=20260902c" />
+  <link rel="stylesheet" href="./styles.css?v=20260902m" />
 </head>
 <body>
   <header class="top">
@@ -23,11 +23,10 @@
       </div>
       <div class="top-actions">
         <span id="livePill" class="pill off">OFFLINE</span>
-        <button id="refreshBtn" type="button" aria-label="Refresh events">
-          <span class="icon" aria-hidden="true">↻</span>
-        </button>
+        <button id="refreshBtn" type="button" aria-label="Refresh events"><span class="icon" aria-hidden="true">↻</span></button>
       </div>
     </div>
+    <nav id="tabs" class="tabs" aria-label="Applications"></nav>
   </header>
   <main>
     <section class="stats">
@@ -37,6 +36,7 @@
       <article><span>LAST EVENT</span><strong id="statLast">—</strong></article>
     </section>
     <p id="errorBox" class="error" hidden></p>
+    <section id="metricGrid" class="metrics"></section>
     <div class="board">
       <aside class="anomaly-panel">
         <div class="panel-head">
@@ -58,6 +58,24 @@
       </div>
     </div>
   </main>
-  <script src="./app.js?v=20260902c"></script>
+  <div id="sheet" class="sheet" hidden>
+    <button id="sheetBackdrop" class="sheet-backdrop" type="button" aria-label="Close"></button>
+    <section class="sheet-panel">
+      <div class="sheet-head">
+        <div>
+          <p class="kicker">REMEDIATE</p>
+          <h2 id="sheetTitle">—</h2>
+          <p id="sheetSub" class="meta"></p>
+        </div>
+        <button id="sheetClose" type="button" aria-label="Close">✕</button>
+      </div>
+      <p id="sheetStatus" class="meta">Asking the free coding model…</p>
+      <p id="sheetModel" class="meta"></p>
+      <p id="sheetSummary"></p>
+      <pre id="sheetPatch" class="payload"></pre>
+      <button id="copyPatch" type="button" hidden>Copy Patch</button>
+    </section>
+  </div>
+  <script src="./app.js?v=20260902m"></script>
 </body>
 </html>
