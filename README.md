@@ -11,8 +11,9 @@ See [ADR.md](./ADR.md). Static Pages + Cloudflare Worker BFF. $0. iOS Safari fir
 
 ## Behavior
 - Orders events `created_at DESC`
-- Anomaly rows (`error` / `high` / `critical` / `fatal`) isolated with a danger rail
+- Dedicated anomaly queue for `error` / `high` / `critical` / `fatal`
 - Polls every 5 seconds, paused when the tab is hidden
 - No Supabase keys in this repo
+- DOM is textContent-only (public ingest cannot XSS the dashboard)
 
 Push to `main` deploys GitHub Pages.
