@@ -35,15 +35,26 @@
       <article><span>LAST EVENT</span><strong id="statLast">—</strong></article>
     </section>
     <p id="errorBox" class="error" hidden></p>
-    <section class="filters">
-      <input id="search" type="search" placeholder="Search source, type, payload" />
-      <div id="sevChips" class="chips"></div>
-      <div id="srcChips" class="chips"></div>
-      <p id="meta" class="meta">awaiting sync</p>
-    </section>
-    <section>
-      <ul id="list" class="list"></ul>
-    </section>
+    <div class="board">
+      <aside class="anomaly-panel">
+        <div class="panel-head">
+          <h2>Anomaly queue</h2>
+          <strong id="anomCount">0</strong>
+        </div>
+        <ul id="anomalyList"></ul>
+      </aside>
+      <div class="stream">
+        <section class="filters">
+          <input id="search" type="search" placeholder="Search source, type, payload" enterkeyhint="search" />
+          <div id="sevChips" class="chips"></div>
+          <div id="srcChips" class="chips"></div>
+          <p id="meta" class="meta">awaiting sync</p>
+        </section>
+        <section>
+          <ul id="list" class="list"></ul>
+        </section>
+      </div>
+    </div>
   </main>
   <script src="./app.js"></script>
 </body>
