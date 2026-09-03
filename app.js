@@ -1,11 +1,21 @@
 const API = "https://core-api.dominic-calandro1991.workers.dev/api/v1/events";
 const REMEDIATE = "https://core-api.dominic-calandro1991.workers.dev/api/v1/remediate";
 const ANOMALY = new Set(["critical", "fatal", "high", "error"]);
+const RESOLVED_STATUS = new Set(["patched", "recovered", "resolved", "ok"]);
+const ANOMALY_TTL_MS = 6 * 60 * 60 * 1000;
+const STALE_MS = 3 * 60 * 1000;
 const PINNED = [
   { id: "global", label: "Global Health", sources: null },
   { id: "storm-path", label: "Storm Path", sources: ["storm-path", "storm-path-mobile", "storm-path-web"] },
   { id: "nano-cloud", label: "nano-cloud", sources: ["snca-codec", "nano-cloud"] },
   { id: "nano-sandbox", label: "nano-sandbox", sources: ["nano-sandbox"] },
+];
+const GROUPS = [
+  { id: "storm-path", label: "Storm Path", tabId: "storm-path", sources: ["storm-path", "storm-path-mobile", "storm-path-web"] },
+  { id: "nano-cloud", label: "nano-cloud", tabId: "nano-cloud", sources: ["snca-codec", "nano-cloud"] },
+  { id: "nano-sandbox", label: "nano-sandbox", tabId: "nano-sandbox", sources: ["nano-sandbox"] },
+  { id: "command-center", label: "Command Center", tabId: "voltcore-command-center", sources: ["voltcore-command-center", "command_center.remediate"] },
+  { id: "orchestration", label: "Orchestration", tabId: "grok-orchestration-engine", sources: ["grok-orchestration-engine"] },
 ];
 const NAMED = {
   "storm-path": [
@@ -28,10 +38,11 @@ const NAMED = {
 };
 const SOURCE_TAB = {};
 PINNED.forEach((t) => (t.sources || []).forEach((s) => { SOURCE_TAB[s] = t.id; }));
+GROUPS.forEach((g) => g.sources.forEach((s) => { if (!SOURCE_TAB[s]) SOURCE_TAB[s] = g.tabId; }));
 
 const state = {
   events: [], fetchedAt: null, error: null, query: "", severity: "all", source: "all",
-  tab: "global", openId: null, freshIds: new Set(), syncing: false, remediate: null,
+  tab: "global", openId: null, freshIds: new Set(), syncing: false, remediate: null, showAged: false,
 };
 const seen = new Set();
 let firstLoad = true, inflight = null, lastRefreshTap = 0;
@@ -73,16 +84,20 @@ function rec(payload) {
   return payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
 }
 function tabsFrom(events) {
+  const extraKnown = GROUPS
+    .filter((g) => !PINNED.some((p) => p.id === g.tabId))
+    .map((g) => ({ id: g.tabId, label: g.label, sources: g.sources.slice() }));
+  const knownIds = new Set(PINNED.map((t) => t.id).concat(extraKnown.map((t) => t.id)));
   const extra = [];
   const seenSrc = new Set();
   events.forEach((ev) => {
     const src = String(ev.source || "").trim();
-    if (!src || SOURCE_TAB[src] || seenSrc.has(src)) return;
+    if (!src || SOURCE_TAB[src] || knownIds.has(src) || seenSrc.has(src)) return;
     seenSrc.add(src);
     extra.push({ id: src, label: src, sources: [src] });
   });
   extra.sort((a, b) => a.label.localeCompare(b.label));
-  return PINNED.concat(extra);
+  return PINNED.concat(extraKnown, extra);
 }
 function tabEvents(events, tab) {
   if (!tab.sources) return events;
@@ -132,6 +147,64 @@ function latestPayload(events) {
     });
   });
   return out;
+}
+function anomalyState(ev, events, now) {
+  if (!isAnomaly(ev.severity)) return "none";
+  const evT = new Date(ev.created_at).getTime();
+  const er = rec(ev.payload);
+  const superseded = events.some((later) => {
+    if (String(later.id) === String(ev.id)) return false;
+    const laterT = new Date(later.created_at).getTime();
+    if (!(laterT > evT)) return false;
+    if (String(later.source || "") !== String(ev.source || "")) return false;
+    const lr = rec(later.payload);
+    const sameInc = lr.incident && er.incident && String(lr.incident) === String(er.incident);
+    const sameType = String(later.event_type || "") === String(ev.event_type || "");
+    const status = String(lr.status || "").toLowerCase();
+    if (sameInc && (RESOLVED_STATUS.has(status) || !isAnomaly(later.severity))) return true;
+    if (sameType && RESOLVED_STATUS.has(status)) return true;
+    if (sameType && !isAnomaly(later.severity) && /recovery|resolve|patch/i.test(String(later.event_type || "") + " " + status)) return true;
+    return false;
+  });
+  if (superseded) return "resolved";
+  if (Number.isFinite(evT) && now - evT > ANOMALY_TTL_MS) return "aged";
+  return "active";
+}
+function sourceRollup(events, now) {
+  const map = new Map();
+  events.forEach((ev) => {
+    const src = String(ev.source || "unknown");
+    const cur = map.get(src) || {
+      source: src, count: 0, lastAt: ev.created_at, lastSev: ev.severity || "info",
+      lastType: ev.event_type || "event", activeWorst: null,
+    };
+    cur.count += 1;
+    if (ev.created_at && (!cur.lastAt || ev.created_at > cur.lastAt)) {
+      cur.lastAt = ev.created_at;
+      cur.lastSev = ev.severity || "info";
+      cur.lastType = ev.event_type || "event";
+    }
+    map.set(src, cur);
+  });
+  events.forEach((ev) => {
+    if (anomalyState(ev, events, now) !== "active") return;
+    const cur = map.get(String(ev.source || "unknown"));
+    if (cur) cur.activeWorst = ev.severity;
+  });
+  return map;
+}
+function groupTone(members, now) {
+  if (members.some((m) => m.activeWorst)) return "danger";
+  const live = members.filter((m) => m.count);
+  if (!live.length) return "muted";
+  if (live.every((m) => m.lastAt && now - new Date(m.lastAt).getTime() > STALE_MS)) return "warn";
+  return "ok";
+}
+function toneLabel(tone, members) {
+  if (tone === "danger") return "active anomaly";
+  if (tone === "warn") return "stale";
+  if (tone === "muted") return "awaiting ingest";
+  return "healthy";
 }
 
 async function load(userInitiated) {
@@ -211,6 +284,71 @@ function metricCard(key, label, kind, value, waiting) {
   return art;
 }
 
+function sourceRow(h, now) {
+  const stale = h.count && h.lastAt && now - new Date(h.lastAt).getTime() > STALE_MS;
+  const b = el("button", "health-source");
+  b.type = "button";
+  const top = el("span", "health-source-top");
+  top.appendChild(el("span", "source", h.source));
+  if (h.activeWorst) top.appendChild(el("span", "sev danger", String(h.activeWorst)));
+  else if (!h.count) top.appendChild(el("span", "sev muted", "idle"));
+  else if (stale) top.appendChild(el("span", "sev warn", "stale"));
+  else top.appendChild(el("span", "sev ok", String(h.lastSev || "info")));
+  b.appendChild(top);
+  b.appendChild(el("span", "type",
+    (h.count ? h.count + " events · " + ago(h.lastAt, now) : "awaiting ingest") +
+    (stale ? " · no heartbeat" : "")
+  ));
+  b.addEventListener("click", () => { state.tab = SOURCE_TAB[h.source] || h.source; state.source = "all"; render(); });
+  return b;
+}
+
+function renderGlobal(grid, events, now) {
+  const map = sourceRollup(events, now);
+  const assigned = new Set();
+  grid.classList.add("metrics-groups");
+  GROUPS.forEach((g) => {
+    const members = g.sources.map((s) => map.get(s) || {
+      source: s, count: 0, lastAt: null, lastSev: "info", lastType: "", activeWorst: null,
+    });
+    members.forEach((m) => assigned.add(m.source));
+    const tone = groupTone(members, now);
+    const sec = el("section", "health-group");
+    const head = el("button", "health-group-head");
+    head.type = "button";
+    const titles = el("div");
+    titles.appendChild(el("h3", "", g.label));
+    const liveN = members.filter((m) => m.count).length;
+    titles.appendChild(el("p", "type", liveN + "/" + members.length + " sources reporting"));
+    head.appendChild(titles);
+    head.appendChild(el("span", "sev " + tone, toneLabel(tone, members)));
+    head.addEventListener("click", () => { state.tab = g.tabId; state.source = "all"; render(); });
+    sec.appendChild(head);
+    const body = el("div", "health-sources");
+    members.forEach((h) => body.appendChild(sourceRow(h, now)));
+    sec.appendChild(body);
+    grid.appendChild(sec);
+  });
+  const extras = [];
+  map.forEach((h, src) => { if (!assigned.has(src)) extras.push(h); });
+  extras.sort((a, b) => a.source.localeCompare(b.source));
+  if (extras.length) {
+    const sec = el("section", "health-group");
+    const head = el("div", "health-group-head");
+    const titles = el("div");
+    titles.appendChild(el("h3", "", "Other"));
+    titles.appendChild(el("p", "type", extras.length + " auto-discovered"));
+    head.appendChild(titles);
+    const tone = groupTone(extras, now);
+    head.appendChild(el("span", "sev " + tone, toneLabel(tone, extras)));
+    sec.appendChild(head);
+    const body = el("div", "health-sources");
+    extras.forEach((h) => body.appendChild(sourceRow(h, now)));
+    sec.appendChild(body);
+    grid.appendChild(sec);
+  }
+}
+
 function openSheet(ev) {
   state.remediate = ev;
   const sheet = document.getElementById("sheet");
@@ -243,6 +381,23 @@ function closeSheet() {
   document.getElementById("sheet").hidden = true;
 }
 
+function anomCard(ev, now, kind) {
+  const li = el("li");
+  const btn = el("button", kind === "active" ? "anom-card" : "anom-card aged");
+  btn.type = "button";
+  btn.appendChild(el("span", "sev " + (kind === "active" ? "danger" : "warn"), kind === "resolved" ? "resolved" : kind === "aged" ? "aged" : String(ev.severity || "high")));
+  btn.appendChild(el("span", "source", ev.source || "unknown"));
+  btn.appendChild(el("span", "type", (ev.event_type || "event") + " · " + ago(ev.created_at, now)));
+  if (kind === "active") {
+    btn.appendChild(el("span", "ok", "Remediate"));
+    btn.addEventListener("click", () => openSheet(ev));
+  } else {
+    btn.appendChild(el("span", "muted", kind === "resolved" ? "Superseded by later recovery" : "Older than 6h — not actionable"));
+  }
+  li.appendChild(btn);
+  return li;
+}
+
 function render() {
   const now = Date.now();
   const live = !state.error && Boolean(state.fetchedAt);
@@ -257,10 +412,15 @@ function render() {
   const rowsAll = tabEvents(state.events, tab);
   const sources = Array.from(new Set(rowsAll.map((e) => e.source).filter(Boolean))).sort();
   const sevs = Array.from(new Set(rowsAll.map((e) => String(e.severity || "info").toLowerCase()))).sort();
-  const anoms = rowsAll.filter((e) => isAnomaly(e.severity));
+  const activeAnoms = rowsAll.filter((e) => anomalyState(e, state.events, now) === "active");
+  const agedAnoms = rowsAll.filter((e) => {
+    const s = anomalyState(e, state.events, now);
+    return s === "aged" || s === "resolved";
+  });
   const q = state.query.trim().toLowerCase();
   const rows = rowsAll.filter((ev) => {
-    if (state.severity === "anomaly" && !isAnomaly(ev.severity)) return false;
+    const astate = anomalyState(ev, state.events, now);
+    if (state.severity === "anomaly" && astate !== "active") return false;
     if (state.severity !== "all" && state.severity !== "anomaly" && String(ev.severity || "").toLowerCase() !== state.severity) return false;
     if (state.source !== "all" && ev.source !== state.source) return false;
     if (!q) return true;
@@ -277,9 +437,10 @@ function render() {
   });
 
   document.getElementById("statCount").textContent = String(rowsAll.length);
-  document.getElementById("statAnom").textContent = String(anoms.length);
+  document.getElementById("statAnom").textContent = String(activeAnoms.length);
   document.getElementById("statSources").textContent = String(sources.length);
   document.getElementById("statLast").textContent = rowsAll[0] ? ago(rowsAll[0].created_at, now) : "—";
+  document.getElementById("statAnomArticle").classList.toggle("danger", activeAnoms.length > 0);
 
   const err = document.getElementById("errorBox");
   if (state.error) { err.hidden = false; err.textContent = "Telemetry link failed: " + state.error; }
@@ -287,26 +448,9 @@ function render() {
 
   const grid = document.getElementById("metricGrid");
   grid.replaceChildren();
+  grid.classList.remove("metrics-groups");
   if (tab.id === "global") {
-    const map = new Map();
-    rowsAll.forEach((ev) => {
-      const src = String(ev.source || "unknown");
-      const cur = map.get(src) || { source: src, count: 0, lastAt: ev.created_at, worst: ev.severity || "info" };
-      cur.count += 1;
-      if (ev.created_at && (!cur.lastAt || ev.created_at > cur.lastAt)) cur.lastAt = ev.created_at;
-      if (isAnomaly(ev.severity)) cur.worst = ev.severity;
-      map.set(src, cur);
-    });
-    if (!map.size) grid.appendChild(el("p", "empty", "No sources in this window."));
-    map.forEach((h) => {
-      const b = el("button", "health-card");
-      b.type = "button";
-      b.appendChild(el("span", "source", h.source));
-      b.appendChild(el("span", isAnomaly(h.worst) ? "sev danger" : "sev ok", String(h.worst)));
-      b.appendChild(el("span", "type", h.count + " events · " + ago(h.lastAt, now)));
-      b.addEventListener("click", () => { state.tab = SOURCE_TAB[h.source] || h.source; render(); });
-      grid.appendChild(b);
-    });
+    renderGlobal(grid, rowsAll, now);
   } else {
     const latest = latestPayload(rowsAll);
     const named = NAMED[tab.id] || [];
@@ -325,22 +469,33 @@ function render() {
   }
 
   const listA = document.getElementById("anomalyList");
-  document.getElementById("anomCount").textContent = String(anoms.length);
-  document.querySelector(".anomaly-panel").classList.toggle("hot", anoms.length > 0);
+  document.getElementById("anomCount").textContent = String(activeAnoms.length);
+  document.querySelector(".anomaly-panel").classList.toggle("hot", activeAnoms.length > 0);
   listA.replaceChildren();
-  if (!anoms.length) listA.appendChild(el("li", "empty", "Clear — no high-severity events."));
-  else anoms.forEach((ev) => {
-    const li = el("li");
-    const btn = el("button", "anom-card");
-    btn.type = "button";
-    btn.appendChild(el("span", "sev danger", String(ev.severity || "high")));
-    btn.appendChild(el("span", "source", ev.source || "unknown"));
-    btn.appendChild(el("span", "type", (ev.event_type || "event") + " · " + ago(ev.created_at, now)));
-    btn.appendChild(el("span", "ok", "Remediate"));
-    btn.addEventListener("click", () => openSheet(ev));
-    li.appendChild(btn);
-    listA.appendChild(li);
-  });
+  if (!activeAnoms.length) {
+    listA.appendChild(el("li", "empty",
+      agedAnoms.length ? "No active anomalies." : "Clear — no high-severity events."
+    ));
+  } else {
+    activeAnoms.forEach((ev) => listA.appendChild(anomCard(ev, now, "active")));
+  }
+  const agedBox = document.getElementById("agedBox");
+  if (!agedAnoms.length) {
+    agedBox.hidden = true;
+    agedBox.replaceChildren();
+  } else {
+    agedBox.hidden = false;
+    agedBox.replaceChildren();
+    const tog = el("button", "aged-toggle", (state.showAged ? "Hide" : "Show") + " " + agedAnoms.length + " aged / resolved");
+    tog.type = "button";
+    tog.addEventListener("click", () => { state.showAged = !state.showAged; render(); });
+    agedBox.appendChild(tog);
+    if (state.showAged) {
+      const ul = el("ul", "aged-list");
+      agedAnoms.forEach((ev) => ul.appendChild(anomCard(ev, now, anomalyState(ev, state.events, now))));
+      agedBox.appendChild(ul);
+    }
+  }
 
   const sev = document.getElementById("sevChips");
   sev.replaceChildren();
@@ -363,12 +518,17 @@ function render() {
     return;
   }
   rows.forEach((ev) => {
-    const li = el("li", (isAnomaly(ev.severity) ? "anomaly" : "") + (state.freshIds.has(String(ev.id)) ? " fresh" : ""));
+    const astate = isAnomaly(ev.severity) ? anomalyState(ev, state.events, now) : "none";
+    const li = el("li",
+      (astate === "active" ? "anomaly" : astate !== "none" ? "anomaly aged" : "") +
+      (state.freshIds.has(String(ev.id)) ? " fresh" : "")
+    );
     const row = el("div", "row-wrap");
     const btn = el("button", "row");
     btn.type = "button";
     btn.appendChild(el("span", "time", clock(ev.created_at)));
-    btn.appendChild(el("span", "sev " + (isAnomaly(ev.severity) ? "danger" : "ok"), ev.severity || "info"));
+    const sevCls = astate === "active" ? "danger" : astate !== "none" ? "warn" : "ok";
+    btn.appendChild(el("span", "sev " + sevCls, astate === "resolved" ? "resolved" : astate === "aged" ? "aged" : (ev.severity || "info")));
     const mid = el("span");
     mid.appendChild(el("span", "source", ev.source || "unknown"));
     mid.appendChild(el("div", "type", ev.event_type || "event"));
@@ -376,7 +536,7 @@ function render() {
     btn.appendChild(el("span", "ago", ago(ev.created_at, now)));
     btn.addEventListener("click", () => { state.openId = state.openId === ev.id ? null : ev.id; render(); });
     row.appendChild(btn);
-    if (remediable(ev.severity)) {
+    if (astate === "active" && remediable(ev.severity)) {
       const r = el("button", "rem-btn", "Remediate");
       r.type = "button";
       r.addEventListener("click", () => openSheet(ev));

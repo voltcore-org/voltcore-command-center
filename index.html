@@ -4,20 +4,23 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#07090c" />
+  <meta name="color-scheme" content="dark" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Command Center" />
+  <meta name="format-detection" content="telephone=no" />
   <meta name="description" content="VOLTCORE Command Center — multi-app health and remediation." />
   <title>VOLTCORE Command Center</title>
   <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="./styles.css?v=20260902n" />
+  <link rel="stylesheet" href="./styles.css?v=20260903a" />
 </head>
 <body>
   <header class="top">
     <div class="top-inner">
-      <div>
+      <div class="brand">
         <p class="kicker">VOLTCORE // OBSERVABILITY</p>
         <h1>Command Center</h1>
       </div>
@@ -31,7 +34,7 @@
   <main>
     <section class="stats">
       <article><span>INGESTED</span><strong id="statCount">0</strong></article>
-      <article class="danger"><span>ANOMALIES</span><strong id="statAnom">0</strong></article>
+      <article id="statAnomArticle" class="danger"><span>ANOMALIES</span><strong id="statAnom">0</strong></article>
       <article><span>SOURCES</span><strong id="statSources">0</strong></article>
       <article><span>LAST EVENT</span><strong id="statLast">—</strong></article>
     </section>
@@ -44,10 +47,11 @@
           <strong id="anomCount">0</strong>
         </div>
         <ul id="anomalyList"></ul>
+        <div id="agedBox" hidden></div>
       </aside>
       <div class="stream">
         <section class="filters">
-          <input id="search" type="search" placeholder="Search source, type, payload" enterkeyhint="search" />
+          <input id="search" type="search" placeholder="Search source, type, payload" enterkeyhint="search" autocapitalize="none" autocorrect="off" />
           <div id="sevChips" class="chips"></div>
           <div id="srcChips" class="chips"></div>
           <p id="meta" class="meta">awaiting sync</p>
@@ -76,6 +80,6 @@
       <button id="copyPatch" type="button" hidden>Copy Patch</button>
     </section>
   </div>
-  <script src="./app.js?v=20260902n"></script>
+  <script src="./app.js?v=20260903a"></script>
 </body>
 </html>
